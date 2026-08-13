@@ -4,17 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号（例如：1.0.0）'
+        description: '版本号（留空则从 Cargo.toml 自动读取）'
         required: false
         type: string
-        default: 'auto'
+        default: ''
       use_upx:
-        description: 'build with upx'
+        description: 'UPX 压缩二进制（armv7 建议关闭以避免兼容性问题）'
         required: false
         type: boolean
-        default: true
+        default: false
       release_type:
-        description: '发布类型（Release type）'
+        description: '发布类型'
         required: true
         type: choice
         default: '预发布版（pre-release）'
@@ -25,106 +25,57 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # SimAdmin 源码仓库（当前仓库只放 workflow 文件，源码从远程拉取）
   SIMADMIN_REPO: 3899/SimAdmin
+  TARGET: armv7-unknown-linux-musleabihf
+  ZIG_VERSION: '0.13.0'
 
 permissions:
   contents: write
 
 jobs:
-  prepare:
-    name: Resolve version
+  build:
+    name: Build armv7 (MSM8916 / Android 4.4)
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
-      current_version: ${{ steps.version.outputs.current_version }}
-      version_source: ${{ steps.version.outputs.version_source }}
     steps:
       - name: Checkout SimAdmin source
         uses: actions/checkout@v4
         with:
           repository: ${{ env.SIMADMIN_REPO }}
           fetch-depth: 0
-      - name: Read VERSION
+
+      # ---------- 版本号 ----------
+      - name: Resolve version
         id: version
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           VERSION=$(printf '%s' "$INPUT_VERSION" | tr -d '[:space:]')
-          if [ -z "$VERSION" ] || [ "$VERSION" = "auto" ]; then
-            # 多级兜底：VERSION 文件 -> backend/Cargo.toml -> 默认值
+          if [ -z "$VERSION" ]; then
             if [ -f VERSION ]; then
-              CURRENT_VERSION=$(tr -d '[:space:]' < VERSION)
-              SOURCE="VERSION file"
+              VERSION=$(tr -d '[:space:]' < VERSION)
             elif [ -f backend/Cargo.toml ]; then
-              CURRENT_VERSION=$(grep -m1 '^version' backend/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
-              SOURCE="backend/Cargo.toml"
+              VERSION=$(grep -m1 '^version' backend/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
             else
-              CURRENT_VERSION="0.1.0"
-              SOURCE="default (no VERSION or Cargo.toml found)"
-              echo "::warning::No VERSION file or backend/Cargo.toml found, using default version 0.1.0"
+              VERSION="0.1.0"
             fi
-            VERSION="$CURRENT_VERSION"
-          else
-            CURRENT_VERSION="$VERSION"
-            SOURCE="workflow input"
           fi
-          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){1,3}([-.][0-9A-Za-z]+)*$'; then
-            echo "Invalid version: $VERSION" >&2
-            exit 1
-          fi
-          echo "Resolved version: $VERSION (source: $SOURCE)"
-          {
-            echo "version=$VERSION"
-            echo "current_version=$CURRENT_VERSION"
-            echo "version_source=$SOURCE"
-          } >> "$GITHUB_OUTPUT"
-
-  build:
-    name: Build ${{ matrix.target }}
-    needs: prepare
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # 高通410 (MSM8916) = Cortex-A53，安卓4.4 仅运行在 32 位模式
-          # 因此使用 armv7-unknown-linux-musleabihf，在 x86_64 runner 上交叉编译
-          - target: armv7-unknown-linux-musleabihf
-            runner: ubuntu-latest
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Checkout SimAdmin source
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.SIMADMIN_REPO }}
-          fetch-depth: 0
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Resolved version: $VERSION"
 
       - name: Sync version numbers
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           printf '%s\n' "$VERSION" > VERSION
           sed -i "s/^version = \"[^\"]*\"/version = \"$VERSION\"/" backend/Cargo.toml
           sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" frontend/package.json
 
+      # ---------- Rust ----------
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
-
-      - name: Install native build tools
-        run: |
-          sudo apt-get update
-          # 原工作流使用 apt musl-tools（仅能编译同架构），
-          # armv7 交叉编译需使用 musl.cc 预编译的 armv7l-linux-musleabihf 工具链
-          curl -fsSL https://musl.cc/armv7l-linux-musleabihf-cross.tgz -o /tmp/armv7l-musl-cross.tgz
-          sudo tar -xzf /tmp/armv7l-musl-cross.tgz -C /opt/
-          rm -f /tmp/armv7l-musl-cross.tgz
-          echo "/opt/armv7l-linux-musleabihf-cross/bin" >> "$GITHUB_PATH"
-          if [ "${{ inputs.use_upx }}" = "true" ]; then
-            sudo apt-get install -y upx-ucl
-          fi
-          armv7l-linux-musleabihf-gcc --version
+          targets: ${{ env.TARGET }}
 
       - name: Cache Rust dependencies
         uses: actions/cache@v4
@@ -134,32 +85,32 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             backend/target/
-          key: ${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-cargo-${{ hashFiles('backend/Cargo.lock') }}
+          key: ${{ runner.os }}-armv7-musleabihf-cargo-${{ hashFiles('backend/Cargo.lock') }}
 
-      - name: Build backend
-        working-directory: backend
-        env:
-          TARGET: ${{ matrix.target }}
-          SQLITE3_STATIC: '1'
-          LIBSQLITE3_SYS_USE_PKG_CONFIG: '0'
-          # 高通410 (MSM8916) Cortex-A53：指定 target-cpu 自动启用 VFPv4 + NEON
-          RUSTFLAGS: '-C target-cpu=cortex-a53'
+      # ---------- zig（内置 musl 交叉编译，替代 musl.cc 工具链） ----------
+      - name: Install zig (musl cross-compiler)
         run: |
-          case "$TARGET" in
-            armv7-unknown-linux-musleabihf)
-              export CC_armv7_unknown_linux_musleabihf=armv7l-linux-musleabihf-gcc
-              export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER=armv7l-linux-musleabihf-gcc
-              ;;
-          esac
-          cargo build --locked --release --target "$TARGET"
-          file "target/$TARGET/release/simadmin"
+          curl -fsSL "https://github.com/ziglang/zig/releases/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" \
+            -o /tmp/zig.tar.xz
+          sudo tar -xf /tmp/zig.tar.xz -C /opt/
+          rm -f /tmp/zig.tar.xz
+          echo "/opt/zig-linux-x86_64-${ZIG_VERSION}" >> "$GITHUB_PATH"
+          # 创建包装脚本，供 Rust / cc-rs 调用
+          sudo tee /usr/local/bin/armv7-musleabihf-cc > /dev/null << 'EOF'
+#!/bin/bash
+exec zig cc -target arm-linux-musleabihf "$@"
+EOF
+          sudo chmod +x /usr/local/bin/armv7-musleabihf-cc
+          zig version
+          armv7-musleabihf-cc --version
 
-      - name: Compress backend with UPX
+      - name: Install UPX
         if: inputs.use_upx == true
-        env:
-          TARGET: ${{ matrix.target }}
-        run: upx --best --lzma "backend/target/$TARGET/release/simadmin"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx-ucl
 
+      # ---------- 前端 ----------
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -177,21 +128,35 @@ jobs:
           pnpm run lint
           pnpm exec vite build
 
-      - name: Package OTA
+      # ---------- 后端 ----------
+      - name: Build backend
+        working-directory: backend
         env:
-          TARGET: ${{ matrix.target }}
-          VERSION: ${{ needs.prepare.outputs.version }}
+          SQLITE3_STATIC: '1'
+          LIBSQLITE3_SYS_USE_PKG_CONFIG: '0'
+          CC_armv7_unknown_linux_musleabihf: armv7-musleabihf-cc
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER: armv7-musleabihf-cc
+          # 高通410 (MSM8916) Cortex-A53：启用 VFPv4 + NEON
+          RUSTFLAGS: '-C target-cpu=cortex-a53'
         run: |
-          # pack-ota.sh 原生仅支持 aarch64 / x86_64，临时注入 armv7 target 支持
+          cargo build --locked --release --target "$TARGET"
+          file "target/$TARGET/release/simadmin"
+
+      - name: Compress backend with UPX
+        if: inputs.use_upx == true
+        run: upx --best --lzma "backend/target/$TARGET/release/simadmin"
+
+      # ---------- 打包 OTA ----------
+      - name: Package OTA
+        run: |
+          # pack-ota.sh 原生仅支持 aarch64 / x86_64，注入 armv7 支持
           python3 << 'PYEOF'
           with open('scripts/pack-ota.sh', 'r') as f:
               s = f.read()
-          # 参数解析分支
           s = s.replace(
               '--target=x86_64|--target=amd64|--target=x86_64-unknown-linux-musl)',
               '--target=x86_64|--target=amd64|--target=x86_64-unknown-linux-musl)\n            --target=armv7|--target=armv7l|--target=armv7-unknown-linux-musleabihf)\n                TARGET="armv7-unknown-linux-musleabihf"\n                ;;'
           )
-          # 归一化分支
           s = s.replace(
               'x86_64|amd64) TARGET="x86_64-unknown-linux-musl" ;;',
               'x86_64|amd64) TARGET="x86_64-unknown-linux-musl" ;;\n    armv7|armv7l) TARGET="armv7-unknown-linux-musleabihf" ;;\n    armv7-unknown-linux-musleabihf) ;;'
@@ -201,34 +166,23 @@ jobs:
           PYEOF
 
           ./scripts/pack-ota.sh --target="$TARGET"
-          case "$TARGET" in
-            armv7-unknown-linux-musleabihf)
-              ARCH_SUFFIX="armv7"
-              ;;
-          esac
           SOURCE="release/simadmin_${VERSION}_${TARGET}.tar.gz"
-          DEST="release/simadmin-${ARCH_SUFFIX}.tar.gz"
+          DEST="release/simadmin-armv7.tar.gz"
           mv "$SOURCE" "$DEST"
           sha256sum release/*.tar.gz
 
       - name: Upload OTA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ota-${{ matrix.target }}
+          name: ota-armv7
           path: release/*.tar.gz
           if-no-files-found: error
 
   publish:
     name: Publish release
-    needs: [prepare, build]
+    needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout SimAdmin source
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.SIMADMIN_REPO }}
-          fetch-depth: 0
-
       - name: Download OTA artifacts
         uses: actions/download-artifact@v4
         with:
@@ -238,82 +192,71 @@ jobs:
 
       - name: Generate checksums and release notes
         env:
-          VERSION: ${{ needs.prepare.outputs.version }}
+          VERSION: ${{ needs.build.outputs.version }}
           RELEASE_TYPE: ${{ inputs.release_type }}
           COMMIT_SHA: ${{ github.sha }}
-          REPOSITORY: ${{ github.repository }}
         run: |
           cd release
           sha256sum -- ./*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
           cd ..
           BUILD_TIME=$(TZ='Asia/Shanghai' date +'%Y/%m/%d %H:%M:%S')
-          export BUILD_TIME
-          python3 << 'EOF'
-          import os, sys, re, subprocess
-          version = os.environ.get('VERSION', '')
-          commit_sha = os.environ.get('COMMIT_SHA', '')
-          release_type = os.environ.get('RELEASE_TYPE', '预发布版（pre-release）')
-          if not release_type:
-              release_type = '预发布版（pre-release）'
-          repository = os.environ.get('REPOSITORY', '3899/SimAdmin')
-          build_time = os.environ.get('BUILD_TIME', '')
-          changelog_path = 'docs/changelog.md'
-          changelog_text = ''
-          prev_tag = ''
-          if os.path.exists(changelog_path):
-              with open(changelog_path, 'r', encoding='utf-8') as f:
-                  content = f.read()
+          ARMV7_HASH=$(grep 'simadmin-armv7.tar.gz' release/SHA256SUMS | cut -d' ' -f1)
+          cat > release/RELEASE_BODY.md << EOF
+## OTA 更新包 — 安卓4.4 / 高通410 (MSM8916) 专用
 
-              pattern = rf'### 📌 v{re.escape(version)}\s*\n(.*?)(?=\n### 📌 v|\Z)'
-              match = re.search(pattern, content, re.DOTALL)
-              if match:
-                  changelog_text = match.group(1).strip()
+### 版本信息
 
-              versions = re.findall(r'### 📌 v(\d+\.\d+\.\d+)', content)
-              if version in versions:
-                  idx = versions.index(version)
-                  if idx + 1 < len(versions):
-                      prev_tag = f'v{versions[idx + 1]}'
-          if not prev_tag:
-              try:
-                  tags = subprocess.check_output(['git', 'tag', '--sort=-v:refname'], text=True).strip().splitlines()
-                  tags = [t for t in tags if t.startswith('v') and t != f'v{version}']
-                  if tags:
-                      prev_tag = tags[0]
-              except Exception:
-                  pass
-          if not prev_tag:
-              prev_tag = 'v1.0.0'
-          if not changelog_text:
-              changelog_text = '- 详见 Commit 提交记录。'
-          full_changelog_line = f'**Full Changelog**: https://github.com/{repository}/compare/{prev_tag}...v{version}'
-          body = (
-              f'## OTA 更新包\n\n'
-              f'### 版本信息\n\n'
-              f'- **版本**: {version}\n'
-              f'- **Commit**: {commit_sha}\n'
-              f'- **构建时间**: {build_time}\n'
-              f'- **发布类型**: {release_type}\n'
-              f'- **目标平台**: 安卓4.4 (KitKat) + 高通骁龙410 (MSM8916 / Cortex-A53)\n'
-              f'- **编译目标**: `armv7-unknown-linux-musleabihf` (musl 静态链接)\n'
-              f'- **资产包**: \n'
-              f'\t- **armv7 (MSM8916 / Android 4.4)**: `simadmin-armv7.tar.gz`\n\n'
-              f'### 更新说明\n\n'
-              f'{changelog_text}\n\n\n'
-              f'{full_changelog_line}\n'
-          )
-          with open('release/RELEASE_BODY.md', 'w', encoding='utf-8') as f:
-              f.write(body)
-          EOF
+| 项目 | 值 |
+| :--- | :--- |
+| **版本** | ${VERSION} |
+| **Commit** | \`${COMMIT_SHA}\` |
+| **构建时间** | ${BUILD_TIME} |
+| **发布类型** | ${RELEASE_TYPE} |
+| **目标 CPU** | 高通骁龙410 / MSM8916 / Cortex-A53 |
+| **目标系统** | 安卓4.4 (KitKat) + Linux 容器 |
+| **Rust Target** | \`armv7-unknown-linux-musleabihf\` |
+| **链接方式** | musl 静态链接（zig cc） |
+| **CPU 优化** | \`target-cpu=cortex-a53\`（VFPv4 + NEON） |
 
-      - name: Publish OTA packages
+### 资产包
+
+| 架构 / 平台 | 文件名 | SHA-256 |
+| :--- | :--- | :--- |
+| **armv7l / MSM8916** | \`simadmin-armv7.tar.gz\` | \`${ARMV7_HASH}\` |
+
+### 包内容
+
+\`\`\`
+simadmin-armv7.tar.gz
+├── simadmin          # 后端二进制 (armv7 静态链接)
+├── www/              # 前端 SPA 静态文件
+└── meta.json         # 版本元数据
+\`\`\`
+
+### 部署说明
+
+在安卓4.4 设备的 Linux 容器（Linux Deploy / chroot / Termux 等）内以 root 执行：
+
+\`\`\`bash
+tar -xzf simadmin-armv7.tar.gz -C /opt/simadmin/
+/opt/simadmin/simadmin --host :: --port 3000
+\`\`\`
+
+> SimAdmin 依赖 ModemManager / systemd / D-Bus，纯安卓环境无法直接运行，需完整 Linux 容器。
+> 高通410 虽为 64 位 CPU，但安卓4.4 仅运行在 32 位模式，故采用 armv7 目标。
+
+**源码**: https://github.com/${SIMADMIN_REPO}
+EOF
+
+      - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # 使用独立 tag 后缀，避免与主构建 (aarch64/x86_64) 的 release 冲突
-          tag_name: v${{ needs.prepare.outputs.version }}-armv7
-          name: SimAdmin_v${{ needs.prepare.outputs.version }}_armv7-MSM8916
+          tag_name: v${{ needs.build.outputs.version }}-armv7
+          name: SimAdmin_v${{ needs.build.outputs.version }}_armv7-MSM8916
           files: |
             release/simadmin-armv7.tar.gz
+            release/SHA256SUMS
           body_path: release/RELEASE_BODY.md
           overwrite_files: true
           generate_release_notes: false
@@ -324,51 +267,17 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build summary
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-          RELEASE_TYPE: ${{ inputs.release_type }}
-          COMMIT_SHA: ${{ github.sha }}
-          REPOSITORY: ${{ github.repository }}
         run: |
-          BUILD_TIME=$(TZ='Asia/Shanghai' date +'%Y/%m/%d %H:%M:%S')
-          export BUILD_TIME
-          python3 << 'EOF'
-          import os
-          version = os.environ.get('VERSION', '')
-          commit_sha = os.environ.get('COMMIT_SHA', '')
-          release_type = os.environ.get('RELEASE_TYPE', '预发布版（pre-release）')
-          if not release_type:
-              release_type = '预发布版（pre-release）'
-          repository = os.environ.get('REPOSITORY', '3899/SimAdmin')
-          build_time = os.environ.get('BUILD_TIME', '')
-          sums = {}
-          sums_file = 'release/SHA256SUMS'
-          if os.path.exists(sums_file):
-              with open(sums_file, 'r', encoding='utf-8') as f:
-                  for line in f:
-                      parts = line.strip().split()
-                      if len(parts) >= 2:
-                          h, fn = parts[0], os.path.basename(parts[1])
-                          sums[fn] = h
-          armv7_hash = sums.get('simadmin-armv7.tar.gz', 'N/A')
-          release_url = f'https://github.com/{repository}/releases/tag/v{version}-armv7'
-          summary = (
-              f'## 🚀 SimAdmin OTA 构建完成 (armv7 / MSM8916)\n\n'
-              f'### 📌 版本与构建元数据\n\n'
-              f'- **版本**: `{version}`\n'
-              f'- **Commit**: `{commit_sha}`\n'
-              f'- **构建时间**: `{build_time}`\n'
-              f'- **发布类型**: {release_type}\n'
-              f'- **目标平台**: 安卓4.4 + 高通410 (MSM8916)\n\n'
-              f'### 📦 资产包与 SHA-256 校验和\n\n'
-              f'| 架构 / 平台 | 文件名 | SHA-256 校验和 |\n'
-              f'| :--- | :--- | :--- |\n'
-              f'| **armv7 / MSM8916** | `simadmin-armv7.tar.gz` | `{armv7_hash}` |\n\n'
-              f'---\n'
-              f'🎉 Release 发布完成: [{repository}_v{version}_armv7]({release_url})\n'
-          )
-          step_summary = os.environ.get('GITHUB_STEP_SUMMARY')
-          if step_summary:
-              with open(step_summary, 'a', encoding='utf-8') as f:
-                  f.write(summary)
-          EOF
+          VERSION="${{ needs.build.outputs.version }}"
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/v${VERSION}-armv7"
+          {
+            echo "## Build Complete"
+            echo ""
+            echo "- **Target**: armv7-unknown-linux-musleabihf (MSM8916 / Android 4.4)"
+            echo "- **Version**: $VERSION"
+            echo "- **Release**: $RELEASE_URL"
+            echo ""
+            echo '```'
+            cat release/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
