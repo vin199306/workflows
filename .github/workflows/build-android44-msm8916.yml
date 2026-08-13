@@ -121,11 +121,11 @@ jobs:
           curl -fsSL https://github.com/musl-cc/musl.cc/releases/download/v0.0.1/armv7l-linux-musleabihf-cross.tgz -o /tmp/armv7l-musl-cross.tgz
           sudo tar -xzf /tmp/armv7l-musl-cross.tgz -C /opt/
           rm -f /tmp/armv7l-musl-cross.tgz
-          # echo "/opt/armv7l-linux-musleabihf-cross/bin" >> "$GITHUB_PATH"
+          echo "/opt/armv7l-linux-musleabihf-cross/bin" >> "$GITHUB_PATH"
           if [ "${{ inputs.use_upx }}" = "true" ]; then
             sudo apt-get install -y upx-ucl
           fi
-          ${{ env.TOOLCHAIN_DIR }}/bin/armv7l-linux-musleabihf-gcc --version
+          armv7l-linux-musleabihf-gcc --version
 
       - name: Cache Rust dependencies
         uses: actions/cache@v4
@@ -149,8 +149,8 @@ jobs:
         run: |
           case "$TARGET" in
             armv7-unknown-linux-musleabihf)
-              export CC_armv7_unknown_linux_musleabihf=${{ env.TOOLCHAIN_DIR }}/bin/armv7l-linux-musleabihf-gcc
-              export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER=${{ env.TOOLCHAIN_DIR }}/bin/armv7l-linux-musleabihf-gcc
+              export CC_armv7_unknown_linux_musleabihf=armv7l-linux-musleabihf-gcc
+              export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER=armv7l-linux-musleabihf-gcc
               ;;
           esac
           cargo build --locked --release --target "$TARGET"
