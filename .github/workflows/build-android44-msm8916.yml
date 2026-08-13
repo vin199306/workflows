@@ -27,6 +27,7 @@ env:
   RUST_BACKTRACE: 1
   # SimAdmin 源码仓库（当前仓库只放 workflow 文件，源码从远程拉取）
   SIMADMIN_REPO: 3899/SimAdmin
+  TOOLCHAIN_DIR: ${{ github.workspace }}/toolchain/armv7l-linux-musleabihf-cross
 
 permissions:
   contents: write
@@ -124,7 +125,7 @@ jobs:
           if [ "${{ inputs.use_upx }}" = "true" ]; then
             sudo apt-get install -y upx-ucl
           fi
-          armv7l-linux-musleabihf-gcc --version
+          ${{ env.TOOLCHAIN_DIR }}/bin/armv7l-linux-musleabihf-gcc --version
 
       - name: Cache Rust dependencies
         uses: actions/cache@v4
@@ -140,7 +141,7 @@ jobs:
         working-directory: backend
         env:
           TARGET: ${{ matrix.target }}
-          TOOLCHAIN_DIR: ${{ github.workspace }}/toolchain/armv7l-linux-musleabihf-cross
+          
           SQLITE3_STATIC: '1'
           LIBSQLITE3_SYS_USE_PKG_CONFIG: '0'
           # 高通410 (MSM8916) Cortex-A53：指定 target-cpu 自动启用 VFPv4 + NEON
