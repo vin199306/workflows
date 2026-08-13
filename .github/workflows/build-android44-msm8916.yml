@@ -125,7 +125,7 @@ jobs:
           if [ "${{ inputs.use_upx }}" = "true" ]; then
             sudo apt-get install -y upx-ucl
           fi
-          armv7l-linux-musleabihf-gcc --version
+          /opt/armv7l-linux-musleabihf-cross/bin/armv7l-linux-musleabihf-gcc --version
 
       - name: Cache Rust dependencies
         uses: actions/cache@v4
