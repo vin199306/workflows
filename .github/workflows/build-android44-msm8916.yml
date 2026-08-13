@@ -112,7 +112,16 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
+      - name: Sync version numbers
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          printf '%s\n' "$VERSION" > VERSION
+          sed -i "s/^version = \"[^\"]*\"/version = \"$VERSION\"/" backend/Cargo.toml
+          sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" frontend/package.json
+          # 刷新 Cargo.lock，保持与 manifest 一致，避免 cargo build --locked 报错
+          cargo check --manifest-path backend/Cargo.toml
+          
       - name: Install native build tools
         run: |
           sudo apt-get update
