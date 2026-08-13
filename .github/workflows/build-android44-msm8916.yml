@@ -25,6 +25,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # SimAdmin 源码仓库（当前仓库只放 workflow 文件，源码从远程拉取）
+  SIMADMIN_REPO: 3899/SimAdmin
 
 permissions:
   contents: write
@@ -38,7 +40,11 @@ jobs:
       current_version: ${{ steps.version.outputs.current_version }}
       version_source: ${{ steps.version.outputs.version_source }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout SimAdmin source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SIMADMIN_REPO }}
+          fetch-depth: 0
       - name: Read VERSION
         id: version
         env:
@@ -46,14 +52,19 @@ jobs:
         run: |
           VERSION=$(printf '%s' "$INPUT_VERSION" | tr -d '[:space:]')
           if [ -z "$VERSION" ] || [ "$VERSION" = "auto" ]; then
-            if [ ! -f VERSION ]; then
-              echo "::error::VERSION file not found in repository root, and no explicit version was provided."
-              echo "Either add a VERSION file, or specify a version number (e.g. 1.0.0) in the workflow input."
-              exit 1
+            # 多级兜底：VERSION 文件 -> backend/Cargo.toml -> 默认值
+            if [ -f VERSION ]; then
+              CURRENT_VERSION=$(tr -d '[:space:]' < VERSION)
+              SOURCE="VERSION file"
+            elif [ -f backend/Cargo.toml ]; then
+              CURRENT_VERSION=$(grep -m1 '^version' backend/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+              SOURCE="backend/Cargo.toml"
+            else
+              CURRENT_VERSION="0.1.0"
+              SOURCE="default (no VERSION or Cargo.toml found)"
+              echo "::warning::No VERSION file or backend/Cargo.toml found, using default version 0.1.0"
             fi
-            CURRENT_VERSION=$(tr -d '[:space:]' < VERSION)
             VERSION="$CURRENT_VERSION"
-            SOURCE="VERSION file"
           else
             CURRENT_VERSION="$VERSION"
             SOURCE="workflow input"
@@ -62,6 +73,7 @@ jobs:
             echo "Invalid version: $VERSION" >&2
             exit 1
           fi
+          echo "Resolved version: $VERSION (source: $SOURCE)"
           {
             echo "version=$VERSION"
             echo "current_version=$CURRENT_VERSION"
@@ -81,9 +93,10 @@ jobs:
             runner: ubuntu-latest
     runs-on: ${{ matrix.runner }}
     steps:
-      - name: Checkout repository
+      - name: Checkout SimAdmin source
         uses: actions/checkout@v4
         with:
+          repository: ${{ env.SIMADMIN_REPO }}
           fetch-depth: 0
 
       - name: Sync version numbers
@@ -210,9 +223,10 @@ jobs:
     needs: [prepare, build]
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout SimAdmin source
         uses: actions/checkout@v4
         with:
+          repository: ${{ env.SIMADMIN_REPO }}
           fetch-depth: 0
 
       - name: Download OTA artifacts
