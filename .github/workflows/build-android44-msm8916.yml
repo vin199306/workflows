@@ -97,9 +97,9 @@ jobs:
           echo "/opt/zig-linux-x86_64-${ZIG_VERSION}" >> "$GITHUB_PATH"
           # 创建包装脚本，供 Rust / cc-rs 调用
           sudo tee /usr/local/bin/armv7-musleabihf-cc > /dev/null << 'EOF'
-#!/bin/bash
-exec zig cc -target arm-linux-musleabihf "$@"
-EOF
+          #!/bin/bash
+          exec zig cc -target arm-linux-musleabihf "$@"
+          EOF
           sudo chmod +x /usr/local/bin/armv7-musleabihf-cc
           zig version
           armv7-musleabihf-cc --version
@@ -202,52 +202,63 @@ EOF
           cd ..
           BUILD_TIME=$(TZ='Asia/Shanghai' date +'%Y/%m/%d %H:%M:%S')
           ARMV7_HASH=$(grep 'simadmin-armv7.tar.gz' release/SHA256SUMS | cut -d' ' -f1)
-          cat > release/RELEASE_BODY.md << EOF
-            ## OTA 更新包 — 安卓4.4 / 高通410 (MSM8916) 专用
-            
-            ### 版本信息
-            
-            | 项目 | 值 |
-            | :--- | :--- |
-            | **版本** | ${VERSION} |
-            | **Commit** | \`${COMMIT_SHA}\` |
-            | **构建时间** | ${BUILD_TIME} |
-            | **发布类型** | ${RELEASE_TYPE} |
-            | **目标 CPU** | 高通骁龙410 / MSM8916 / Cortex-A53 |
-            | **目标系统** | 安卓4.4 (KitKat) + Linux 容器 |
-            | **Rust Target** | \`armv7-unknown-linux-musleabihf\` |
-            | **链接方式** | musl 静态链接（zig cc） |
-            | **CPU 优化** | \`target-cpu=cortex-a53\`（VFPv4 + NEON） |
-            
-            ### 资产包
-            
-            | 架构 / 平台 | 文件名 | SHA-256 |
-            | :--- | :--- | :--- |
-            | **armv7l / MSM8916** | \`simadmin-armv7.tar.gz\` | \`${ARMV7_HASH}\` |
-            
-            ### 包内容
-            
-            \`\`\`
-            simadmin-armv7.tar.gz
-            ├── simadmin          # 后端二进制 (armv7 静态链接)
-            ├── www/              # 前端 SPA 静态文件
-            └── meta.json         # 版本元数据
-            \`\`\`
-            
-            ### 部署说明
-            
-            在安卓4.4 设备的 Linux 容器（Linux Deploy / chroot / Termux 等）内以 root 执行：
-            
-            \`\`\`bash
-            tar -xzf simadmin-armv7.tar.gz -C /opt/simadmin/
-            /opt/simadmin/simadmin --host :: --port 3000
-            \`\`\`
-            
-            > SimAdmin 依赖 ModemManager / systemd / D-Bus，纯安卓环境无法直接运行，需完整 Linux 容器。
-            > 高通410 虽为 64 位 CPU，但安卓4.4 仅运行在 32 位模式，故采用 armv7 目标。
-            
-            **源码**: https://github.com/${SIMADMIN_REPO}
-            EOF
+          export BUILD_TIME ARMV7_HASH
+          python3 << 'PYEOF'
+          import os, textwrap
+          version = os.environ.get('VERSION', '')
+          commit_sha = os.environ.get('COMMIT_SHA', '')
+          release_type = os.environ.get('RELEASE_TYPE', '')
+          build_time = os.environ.get('BUILD_TIME', '')
+          armv7_hash = os.environ.get('ARMV7_HASH', '')
+          body = textwrap.dedent(f"""\
+          ## OTA 更新包 — 安卓4.4 / 高通410 (MSM8916) 专用
+
+          ### 版本信息
+
+          | 项目 | 值 |
+          | :--- | :--- |
+          | **版本** | {version} |
+          | **Commit** | `{commit_sha}` |
+          | **构建时间** | {build_time} |
+          | **发布类型** | {release_type} |
+          | **目标 CPU** | 高通骁龙410 / MSM8916 / Cortex-A53 |
+          | **目标系统** | 安卓4.4 (KitKat) + Linux 容器 |
+          | **Rust Target** | `armv7-unknown-linux-musleabihf` |
+          | **链接方式** | musl 静态链接（zig cc） |
+          | **CPU 优化** | `target-cpu=cortex-a53`（VFPv4 + NEON） |
+
+          ### 资产包
+
+          | 架构 / 平台 | 文件名 | SHA-256 |
+          | :--- | :--- | :--- |
+          | **armv7l / MSM8916** | `simadmin-armv7.tar.gz` | `{armv7_hash}` |
+
+          ### 包内容
+
+          ```
+          simadmin-armv7.tar.gz
+          ├── simadmin          # 后端二进制 (armv7 静态链接)
+          ├── www/              # 前端 SPA 静态文件
+          └── meta.json         # 版本元数据
+          ```
+
+          ### 部署说明
+
+          在安卓4.4 设备的 Linux 容器（Linux Deploy / chroot / Termux 等）内以 root 执行：
+
+          ```bash
+          tar -xzf simadmin-armv7.tar.gz -C /opt/simadmin/
+          /opt/simadmin/simadmin --host :: --port 3000
+          ```
+
+          > SimAdmin 依赖 ModemManager / systemd / D-Bus，纯安卓环境无法直接运行，需完整 Linux 容器。
+          > 高通410 虽为 64 位 CPU，但安卓4.4 仅运行在 32 位模式，故采用 armv7 目标。
+
+          **源码**: https://github.com/3899/SimAdmin
+          """)
+          with open('release/RELEASE_BODY.md', 'w', encoding='utf-8') as f:
+              f.write(body)
+          PYEOF
 
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
